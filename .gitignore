@@ -1,0 +1,24 @@
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+
+# DSP capture output
+captures/
+*.bin
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

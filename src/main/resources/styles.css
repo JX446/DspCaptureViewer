@@ -1,0 +1,243 @@
+/* ===== DSP Capture Viewer — Light Modern Theme ===== */
+
+/* --- Root defaults --- */
+.root {
+    -fx-font-family: "Segoe UI", "System", sans-serif;
+    -fx-font-size: 13px;
+    -fx-background-color: #f0f0f5;
+    -fx-text-fill: #222233;
+}
+
+/* --- Header bar --- */
+.header-bar {
+    -fx-background-color: #e4e4ee;
+    -fx-padding: 12 20;
+    -fx-border-color: #d0d0dd;
+    -fx-border-width: 0 0 1 0;
+}
+
+.header-title {
+    -fx-font-size: 18px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #4455aa;
+}
+
+.header-subtitle {
+    -fx-font-size: 11px;
+    -fx-text-fill: #777799;
+}
+
+/* --- Status bar (bottom) --- */
+.status-bar {
+    -fx-background-color: #e4e4ee;
+    -fx-padding: 8 16;
+    -fx-border-color: #d0d0dd;
+    -fx-border-width: 1 0 0 0;
+}
+
+.status-label {
+    -fx-font-size: 12px;
+    -fx-text-fill: #555577;
+}
+
+.status-dot {
+    -fx-font-size: 16px;
+}
+
+.status-dot.idle    { -fx-text-fill: #aaaabb; }
+.status-dot.running { -fx-text-fill: #00a844; }
+.status-dot.error   { -fx-text-fill: #d50000; }
+
+/* --- Buttons (base) --- */
+.button {
+    -fx-background-radius: 6px;
+    -fx-padding: 8 20;
+    -fx-font-weight: bold;
+    -fx-font-size: 12px;
+    -fx-cursor: hand;
+}
+
+/* Start — green accent */
+.button-start {
+    -fx-background-color: #00c853;
+    -fx-text-fill: white;
+}
+.button-start:hover {
+    -fx-background-color: #00e676;
+    -fx-effect: dropshadow(gaussian, rgba(0,200,80,0.35), 8, 0, 0, 2);
+}
+.button-start:pressed {
+    -fx-background-color: #00a844;
+}
+
+/* Stop — red accent */
+.button-stop {
+    -fx-background-color: #e53935;
+    -fx-text-fill: white;
+}
+.button-stop:hover {
+    -fx-background-color: #ff5252;
+    -fx-effect: dropshadow(gaussian, rgba(229,57,53,0.35), 8, 0, 0, 2);
+}
+.button-stop:pressed {
+    -fx-background-color: #c62828;
+}
+
+/* Clear — amber */
+.button-clear {
+    -fx-background-color: #ff9100;
+    -fx-text-fill: white;
+}
+.button-clear:hover {
+    -fx-background-color: #ffab40;
+    -fx-effect: dropshadow(gaussian, rgba(255,145,0,0.35), 8, 0, 0, 2);
+}
+
+/* Export — blue accent */
+.button-export {
+    -fx-background-color: #2979ff;
+    -fx-text-fill: white;
+}
+.button-export:hover {
+    -fx-background-color: #448aff;
+    -fx-effect: dropshadow(gaussian, rgba(41,121,255,0.35), 8, 0, 0, 2);
+}
+
+/* Disabled buttons */
+.button:disabled {
+    -fx-opacity: 0.4;
+    -fx-cursor: default;
+}
+
+/* --- TableView --- */
+.table-view {
+    -fx-background-color: #fafafa;
+    -fx-table-cell-border-color: #e0e0e8;
+    -fx-table-header-border-color: #e0e0e8;
+    -fx-border-color: #d0d0dd;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+}
+
+.table-view .column-header-background {
+    -fx-background-color: #e8e8f2;
+}
+
+.table-view .column-header {
+    -fx-background-color: transparent;
+    -fx-border-color: #e0e0e8;
+    -fx-border-width: 0 1 1 0;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #555588;
+    -fx-font-weight: bold;
+    -fx-font-size: 11px;
+    -fx-padding: 8 12;
+}
+
+.table-view .table-cell {
+    -fx-text-fill: #333344;
+    -fx-padding: 4 12;
+    -fx-alignment: center-left;
+}
+
+.table-view .table-row-cell {
+    -fx-background-color: #fafafa;
+    -fx-border-color: #eeeeee;
+    -fx-border-width: 0 0 1 0;
+}
+
+.table-view .table-row-cell:odd {
+    -fx-background-color: #f5f5fa;
+}
+
+.table-view .table-row-cell:selected {
+    -fx-background-color: #c8c8ee;
+    -fx-text-fill: #222233;
+}
+
+.table-view .table-row-cell:hover {
+    -fx-background-color: #eeeef8;
+}
+
+.table-view .scroll-bar:vertical,
+.table-view .scroll-bar:horizontal {
+    -fx-background-color: #f0f0f5;
+}
+
+.table-view .scroll-bar:vertical .thumb,
+.table-view .scroll-bar:horizontal .thumb {
+    -fx-background-color: #c0c0d0;
+    -fx-background-radius: 4;
+}
+
+/* --- Chart --- */
+.chart {
+    -fx-background-color: #fafafa;
+    -fx-border-color: #d0d0dd;
+    -fx-border-radius: 8;
+    -fx-background-radius: 8;
+    -fx-padding: 12;
+}
+
+.chart-title {
+    -fx-text-fill: #555588;
+    -fx-font-size: 12px;
+}
+
+.chart-plot-background {
+    -fx-background-color: #fcfcfb;
+}
+
+.axis {
+    -fx-tick-label-fill: #898781;
+    -fx-font-size: 10px;
+}
+
+.axis-label {
+    -fx-text-fill: #52514e;
+    -fx-font-size: 11px;
+}
+
+.chart-series-line {
+    -fx-stroke: #2a78d6;
+    -fx-stroke-width: 2px;
+}
+
+.chart-vertical-grid-lines {
+    -fx-stroke: #e1e0d9;
+}
+
+.chart-horizontal-grid-lines {
+    -fx-stroke: #e1e0d9;
+}
+
+/* --- SplitPane --- */
+.split-pane {
+    -fx-background-color: #f0f0f5;
+    -fx-padding: 16;
+}
+
+.split-pane-divider {
+    -fx-background-color: #d0d0dd;
+    -fx-padding: 0 3;
+}
+
+.split-pane-divider:hover {
+    -fx-background-color: #b0b0c8;
+}
+
+/* --- Content area --- */
+.content-area {
+    -fx-background-color: #f0f0f5;
+}
+
+/* --- Tooltip --- */
+.tooltip {
+    -fx-background-color: #444455;
+    -fx-text-fill: #f0f0f0;
+    -fx-font-size: 11px;
+    -fx-background-radius: 4;
+    -fx-padding: 6 10;
+}
