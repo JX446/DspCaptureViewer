@@ -130,10 +130,10 @@
 }
 
 .table-view .column-header .label {
-    -fx-text-fill: #555588;
+    -fx-text-fill: #333366;
     -fx-font-weight: bold;
     -fx-font-size: 11px;
-    -fx-padding: 8 12;
+    -fx-padding: 8 8;
 }
 
 .table-view .table-cell {

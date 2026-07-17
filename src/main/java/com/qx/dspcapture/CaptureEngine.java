@@ -22,12 +22,14 @@ public class CaptureEngine {
     private int bufferAddr = 0x9000;           // monitor_buf
     private int bufferSize = 1024;             // words
     private int pollIntervalMs = 10;           // polling interval
+    private int numChannels = 1;              // 1-4
 
     // ---- State ----
     private volatile boolean running;
     private Thread captureThread;
     private ProxyCaptureClient client;
-    private int lastWr = -1;
+    private int[][] localBufs;                   // [numChannels][bufferSize]
+    private int[] lastWrs;                       // [numChannels]
     private int chunkCount;
     private final List<CaptureListener> listeners = new CopyOnWriteArrayList<>();
 
@@ -47,13 +49,15 @@ public class CaptureEngine {
 
     /** One captured buffer-full of data. */
     public static class Chunk {
+        public final int channel;        // 0-3, which channel
         public final int index;
         public final int wrValue;        // current write pointer position
         public final int[] data;         // raw 32-bit words (full buffer)
         public final int newCount;       // how many words are NEW since last chunk
         public final long timestampMs;
 
-        public Chunk(int index, int wrValue, int[] data, int newCount, long timestampMs) {
+        public Chunk(int channel, int index, int wrValue, int[] data, int newCount, long timestampMs) {
+            this.channel = channel;
             this.index = index;
             this.wrValue = wrValue;
             this.data = data;
@@ -74,6 +78,7 @@ public class CaptureEngine {
     public CaptureEngine pollIntervalMs(int ms) { this.pollIntervalMs = ms; return this; }
     public CaptureEngine outputDir(Path dir) { this.outputDir = dir; return this; }
     public CaptureEngine saveToDisk(boolean save) { this.saveToDisk = save; return this; }
+    public CaptureEngine numChannels(int n) { this.numChannels = Math.max(1, Math.min(4, n)); return this; }
 
     public void addListener(CaptureListener listener) {
         listeners.add(listener);
@@ -92,8 +97,12 @@ public class CaptureEngine {
         client.connect();
 
         running = true;
-        lastWr = -1;
         chunkCount = 0;
+
+        // Init per-channel state
+        localBufs = new int[numChannels][bufferSize];
+        lastWrs   = new int[numChannels];
+        for (int ch = 0; ch < numChannels; ch++) lastWrs[ch] = -1;
 
         captureThread = new Thread(this::captureLoop, "DspCapture");
         captureThread.setDaemon(true);
@@ -115,68 +124,97 @@ public class CaptureEngine {
 
     public boolean isRunning() { return running; }
     public int getChunkCount() { return chunkCount; }
+    public int getNumChannels() { return numChannels; }
+
+    /** Address for channel N buffer. Stride = (bufferSize+1)*4 bytes. */
+    private int chBufferAddr(int ch) { return bufferAddr + ch * (bufferSize + 1) * 4; }
+    /** Address for channel N wr — sits right after channel buffer. */
+    private int chWrAddr(int ch)    { return chBufferAddr(ch) + bufferSize * 4; }
 
     // ---- Main capture loop ----
 
     private void captureLoop() {
-        int[] localBuf = new int[bufferSize];
+        final int combinedWords = bufferSize + 1;  // buffer + adjacent wr
         try {
-            while (running) {
-                byte[] wrRaw = client.readMemory(wrAddr, 4);
-                int wr = java.nio.ByteBuffer.wrap(wrRaw)
-                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
-                System.out.println("[CaptureEngine] wr=" + wr + " lastWr=" + lastWr);
+            // ── Auto-detect: probe old wr (0xA000) to decide layout ──
+            int oldWrSample;
+            try {
+                byte[] r1 = client.readMemory(0xA000, 4);
+                oldWrSample = java.nio.ByteBuffer.wrap(r1).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
+            } catch (IOException e) {
+                System.out.println("[Capture] ERROR probing wr: " + e.getMessage());
+                return;
+            }
+            boolean isOld = (oldWrSample >= 0 && oldWrSample < 1024);
 
-                if (wr != lastWr) {
-                    long tRead = System.currentTimeMillis();
-                    int newCount;
+            final int detectedWrAddr = isOld ? 0xA000 : 0x9800;
+            final int detectedBufSize = isOld ? 1024 : bufferSize;
+
+            while (running) {
+                // ── Phase 1: read wr from Ch0 only ──
+                int wr;
+                if (lastWrs[0] == -1) {
+                                    int[] combined = client.readWords(chBufferAddr(0),
+                            isOld ? 1025 : combinedWords);
+                    System.arraycopy(combined, 0, localBufs[0], 0, detectedBufSize);
+                    wr = combined[detectedBufSize];
+                } else {
+                    byte[] wrRaw = client.readMemory(detectedWrAddr, 4);
+                    wr = java.nio.ByteBuffer.wrap(wrRaw)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
+                }
+
+                for (int ch = 0; ch < numChannels; ch++) {
+                    int lastWr = lastWrs[ch];
+                    if (wr == lastWr) continue;
+
+                    int bufAddr = chBufferAddr(ch);
+                    int[] localBuf = localBufs[ch];
+                    int bs = detectedBufSize;
 
                     if (lastWr == -1) {
-                        // First read: full buffer
-                        int[] data = client.readWords(bufferAddr, bufferSize);
-                        System.arraycopy(data, 0, localBuf, 0, bufferSize);
-                        newCount = bufferSize;
+                        if (ch > 0) {
+                            int[] data = client.readWords(bufAddr, bs);
+                            System.arraycopy(data, 0, localBuf, 0, bs);
+                        }
                     } else if (wr > lastWr) {
-                        // Normal: read [lastWr .. wr-1]
-                        newCount = wr - lastWr;
-                        int[] seg = client.readWords(bufferAddr + lastWr * 4, newCount);
+                        int newCount = wr - lastWr;
+                        int[] seg = client.readWords(bufAddr + lastWr * 4, newCount);
                         System.arraycopy(seg, 0, localBuf, lastWr, newCount);
                     } else {
-                        // Wrap-around: [lastWr .. END] + [0 .. wr-1]
-                        int n1 = bufferSize - lastWr;
+                        int n1 = bs - lastWr;
                         int n2 = wr;
-                        newCount = n1 + n2;
-                        int[] seg1 = client.readWords(bufferAddr + lastWr * 4, n1);
+                        int[] seg1 = client.readWords(bufAddr + lastWr * 4, n1);
                         System.arraycopy(seg1, 0, localBuf, lastWr, n1);
                         if (n2 > 0) {
-                            int[] seg2 = client.readWords(bufferAddr, n2);
+                            int[] seg2 = client.readWords(bufAddr, n2);
                             System.arraycopy(seg2, 0, localBuf, 0, n2);
                         }
                     }
 
-                    System.out.println("[CaptureEngine] read " + newCount
-                            + " new words in " + (System.currentTimeMillis() - tRead) + "ms");
+                    int newCount = (lastWr == -1) ? bs
+                            : (wr > lastWr) ? wr - lastWr
+                            : (bs - lastWr) + wr;
 
-                    Chunk chunk = new Chunk(chunkCount, wr,
-                            Arrays.copyOf(localBuf, bufferSize), newCount,
+                    Chunk chunk = new Chunk(ch, chunkCount, wr,
+                            Arrays.copyOf(localBuf, bs), newCount,
                             System.currentTimeMillis());
                     chunkCount++;
 
-                    if (saveToDisk && outputDir != null) {
-                        saveChunk(chunk);
-                    }
-
+                    if (saveToDisk && outputDir != null) saveChunk(chunk);
                     for (CaptureListener l : listeners) {
                         try { l.onChunk(chunk); } catch (Exception ignored) {}
                     }
+
+                    lastWrs[ch] = wr;
                 }
 
-                lastWr = wr;
                 Thread.sleep(pollIntervalMs);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (IOException e) {
+            System.out.println("[Capture] IO ERROR: " + e.getMessage());
             for (CaptureListener l : listeners) {
                 try { l.onError(e); } catch (Exception ignored) {}
             }

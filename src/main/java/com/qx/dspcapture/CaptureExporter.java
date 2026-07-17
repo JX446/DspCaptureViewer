@@ -13,21 +13,56 @@ import java.util.List;
 public class CaptureExporter {
 
     /**
-     * Export all chunks to a CSV file.
+     * Export chunks as time-aligned CSV: one row per sample instant,
+     * with each channel in its own column.
      *
-     * Format: chunk_index, sample_index, value_dec, value_hex
+     * Format: timestamp_ms, ch0, ch1, ...
      */
     public static void exportCSV(List<CaptureEngine.Chunk> chunks, Path file) throws IOException {
+        // Auto-detect number of channels from the first few chunks
+        int numCh = 1;
+        for (int i = 1; i < Math.min(chunks.size(), 10); i++) {
+            if (chunks.get(i).channel <= chunks.get(i - 1).channel) {
+                numCh = chunks.get(i - 1).channel + 1;
+                break;
+            }
+        }
+
         try (PrintWriter w = new PrintWriter(
                 Files.newBufferedWriter(file, StandardCharsets.UTF_8))) {
-            w.println("chunk,timestamp_ms,sample_index,value_dec,value_hex");
-            for (CaptureEngine.Chunk chunk : chunks) {
-                int[] data = chunk.data;
-                for (int i = 0; i < data.length; i++) {
-                    w.printf("%d,%d,%d,%d,0x%X%n",
-                            chunk.index, chunk.timestampMs,
-                            i, data[i], data[i]);
+            // Header
+            w.print("timestamp_ms");
+            for (int ch = 0; ch < numCh; ch++) w.print(",Ch" + ch);
+            w.println();
+
+            // Group chunks by cycle: N consecutive chunks (one per channel)
+            int i = 0;
+            while (i + numCh <= chunks.size()) {
+                CaptureEngine.Chunk[] cycle = new CaptureEngine.Chunk[numCh];
+                boolean valid = true;
+                for (int ch = 0; ch < numCh; ch++) {
+                    cycle[ch] = chunks.get(i + ch);
+                    if (cycle[ch].channel != ch) { valid = false; break; }
                 }
+                if (!valid) { i++; continue; }
+
+                int newCount = cycle[0].newCount;
+                long ts = cycle[0].timestampMs;
+                int n = cycle[0].data.length;
+
+                // Write each sample instant as one row
+                for (int s = 0; s < newCount; s++) {
+                    w.print(ts);
+                    for (int ch = 0; ch < numCh; ch++) {
+                        CaptureEngine.Chunk c = cycle[ch];
+                        int idx = (c.wrValue - newCount + s + n) % n;
+                        int raw = c.data[idx];
+                        w.printf(",%.6f", Float.intBitsToFloat(raw));
+                    }
+                    w.println();
+                }
+
+                i += numCh;  // advance to next cycle
             }
         }
     }
