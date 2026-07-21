@@ -1,7 +1,6 @@
 package com.qx.dspcapture;
 
-import java.util.ArrayList;
-import java.util.List;
+import javafx.animation.AnimationTimer;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
@@ -10,7 +9,10 @@ import javafx.scene.text.FontWeight;
 
 /**
  * J-Scope style waveform on Canvas — multiple channels overlaid on one plot.
- * Full redraw each chunk; fast enough for ~2000-sample × N-channel waveforms.
+ * <p>
+ * Data comes from a {@link DataProvider}; the visible window is controlled
+ * by a {@link Viewport}.  Rendering is driven by a fixed-frame-rate timer
+ * (default 60 FPS).
  */
 public class WaveformCanvas extends Canvas {
 
@@ -19,11 +21,6 @@ public class WaveformCanvas extends Canvas {
     private static final double MARGIN_RIGHT  = 8;
     private static final double MARGIN_TOP    = 8;
     private static final double MARGIN_BOTTOM = 28;
-
-    // ── Config ──
-    private int numChannels;
-    private final int maxSamples;
-    private final int numChunks;
 
     // ── Colors ──
     private static final Color BG     = Color.web("#000000");
@@ -38,9 +35,13 @@ public class WaveformCanvas extends Canvas {
         Color.web("#e34948"),  // red
     };
 
-    // ── State ──
-    @SuppressWarnings("unchecked")
-    private final List<Float>[] ringBufs = new List[4];
+    // ── External state ──
+    private DataProvider dataProvider;
+    private Viewport viewport;
+    private int numChannels = 1;
+    private Runnable onViewportChanged;  // notify App to sync slider/stats
+
+    // ── Y-axis ──
     private double yMin = -1.0;
     private double yMax =  1.0;
     private boolean autoRange = true;
@@ -50,89 +51,155 @@ public class WaveformCanvas extends Canvas {
 
     // ── Hover state ──
     private double hoverX = -1;
-    private double hoverY = -1;
 
-    public WaveformCanvas(int numChannels, int maxSamples, int numChunks) {
-        super(800, 400);  // default size — StackPane resize listeners will adjust
-        this.numChannels = numChannels;
-        this.maxSamples  = maxSamples;
-        this.numChunks   = numChunks;
-        for (int ch = 0; ch < 4; ch++) {
-            ringBufs[ch] = new ArrayList<>(maxSamples + 512);
-        }
+    // ── Fixed-frame-rate rendering ──
+    private final AnimationTimer renderTimer;
+    private long lastFrameNanos = 0;
+    private volatile long frameIntervalNanos;
+
+    public WaveformCanvas() {
+        super(800, 400);
+        setPickOnBounds(true);  // receive events across entire area
         setAccessibleText("Real-time DSP signal waveform");
 
-        // Hover crosshair + tooltip
+        frameIntervalNanos = 16_666_666L;  // ~16.7ms → 60 FPS
+        renderTimer = new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                if (now - lastFrameNanos >= frameIntervalNanos) {
+                    lastFrameNanos = now;
+                    tickAndDraw();
+                }
+            }
+        };
+        renderTimer.start();
+
         setOnMouseMoved(e -> {
             double mx = e.getX(), my = e.getY();
             if (mx >= left() && mx <= right() && my >= top() && my <= bottom()) {
-                hoverX = mx; hoverY = my;
+                hoverX = mx;
             } else {
-                hoverX = -1; hoverY = -1;
+                hoverX = -1;
             }
-            draw();
         });
-        setOnMouseExited(e -> { hoverX = -1; hoverY = -1; draw(); });
+        setOnMouseExited(e -> { hoverX = -1; });
+
+        // Auto-focus on hover (enables keyboard + scroll without clicking first)
+        setOnMouseEntered(e -> requestFocus());
+
+        // Scroll wheel → zoom centered on cursor (event filter: capture phase)
+        addEventFilter(javafx.scene.input.ScrollEvent.SCROLL, e -> {
+            if (viewport == null || dataProvider == null) return;
+            if (dataProvider.getTotalSamples() == 0) return;
+            double mx = e.getX();
+            if (mx < left() || mx > right()) return;
+            double frac = (mx - left()) / pw();
+            long anchor = viewport.getViewStart() + (long)(viewport.getViewCount() * frac);
+            double factor = (e.getDeltaY() > 0) ? 0.7 : 1.4;
+            viewport.zoomAt(factor, anchor, frac,
+                    Math.max(0, dataProvider.getTotalSamples() - viewport.getViewCount()));
+            if (onViewportChanged != null) onViewportChanged.run();
+            e.consume();
+        });
+
+        // Keyboard crosshair control
+        setFocusTraversable(true);
+        focusedProperty().addListener((obs, ov, nv) -> {
+            if (nv && hoverX < 0) hoverX = left();
+        });
+        addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, e -> {
+            if (viewport == null || dataProvider == null) return;
+            long maxStart = Math.max(0, dataProvider.getTotalSamples() - viewport.getViewCount());
+            switch (e.getCode()) {
+                case SPACE:
+                    viewport.setLive(!viewport.isLive());
+                    if (onViewportChanged != null) onViewportChanged.run();
+                    e.consume();
+                    break;
+                case LEFT:
+                    viewport.setLive(false);  // panning exits live
+                    viewport.scroll(-0.05, 0, maxStart);
+                    if (onViewportChanged != null) onViewportChanged.run();
+                    e.consume();
+                    break;
+                case RIGHT:
+                    viewport.setLive(false);
+                    viewport.scroll(0.05, 0, maxStart);
+                    if (onViewportChanged != null) onViewportChanged.run();
+                    e.consume();
+                    break;
+                case HOME:
+                    viewport.setLive(false);
+                    viewport.scroll(-1.0, 0, maxStart);
+                    if (onViewportChanged != null) onViewportChanged.run();
+                    e.consume();
+                    break;
+                case END:
+                    viewport.setLive(false);
+                    viewport.scroll(1.0, 0, maxStart);
+                    if (onViewportChanged != null) onViewportChanged.run();
+                    e.consume();
+                    break;
+            }
+        });
     }
 
     // ── Public API ──
 
-    /** Push samples for a specific channel. */
-    public void pushChunk(int channel, float[] values) {
-        if (channel >= numChannels) return;
-        List<Float> buf = ringBufs[channel];
-        for (float v : values) buf.add(v);
-        int drop = Math.max(0, buf.size() - maxSamples);
-        if (drop > 0) buf.subList(0, drop).clear();
-        draw();
+    public void setDataProvider(DataProvider dp) {
+        this.dataProvider = dp;
+        this.numChannels = (dp != null) ? dp.getNumChannels() : 1;
     }
 
-    public void clearData() {
-        for (int ch = 0; ch < 4; ch++) ringBufs[ch].clear();
-        draw();
+    public void setViewport(Viewport vp) {
+        this.viewport = vp;
     }
+
+    /** Register a callback invoked after user-driven viewport changes (scroll, keyboard). */
+    public void setOnViewportChanged(Runnable r) {
+        this.onViewportChanged = r;
+    }
+
+    public DataProvider getDataProvider() { return dataProvider; }
+    public Viewport getViewport() { return viewport; }
 
     public void setNumChannels(int n) {
         this.numChannels = n;
-        clearData();  // clear all + redraw
+        draw();
     }
 
     public void setChannelVisible(int ch, boolean v) { channelVisible[ch] = v; draw(); }
     public boolean isChannelVisible(int ch) { return channelVisible[ch]; }
 
-    /** Returns stats for channel: {current, min, max, avg, pkpk, samples}. Null if no data. */
-    public float[] getChannelStats(int ch) {
-        if (ch >= numChannels) return null;
-        List<Float> buf = ringBufs[ch];
-        int n = buf.size();
-        if (n == 0) return null;
-        float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
-        double sum = 0;
-        for (float v : buf) {
-            if (v < min) min = v;
-            if (v > max) max = v;
-            sum += v;
+    /** Zoom centered on a cursor position within the canvas. Called from scroll events. */
+    public void scrollZoom(double cursorX, double deltaY) {
+        if (viewport == null || dataProvider == null) return;
+        if (dataProvider.getTotalSamples() == 0) return;
+        double factor = (deltaY > 0) ? 0.7 : 1.4;
+        if (viewport.isLive()) {
+            // Live mode: only change zoom level, stay following
+            viewport.zoom(factor);
+        } else {
+            // Replay mode: zoom centered on cursor, sync slider
+            if (cursorX < left() || cursorX > right()) return;
+            double frac = (cursorX - left()) / pw();
+            long anchor = viewport.getViewStart() + (long)(viewport.getViewCount() * frac);
+            viewport.zoomAt(factor, anchor, frac,
+                    Math.max(0, dataProvider.getTotalSamples() - viewport.getViewCount()));
+            if (onViewportChanged != null) onViewportChanged.run();
         }
-        return new float[] { buf.get(n - 1), min, max, (float)(sum / n), max - min, n };
     }
 
-    private boolean hasData() {
-        for (int ch = 0; ch < numChannels; ch++) {
-            if (!ringBufs[ch].isEmpty()) return true;
-        }
-        return false;
+    public void setTargetFps(int fps) {
+        frameIntervalNanos = Math.max(1, 1_000_000_000L / fps);
+        lastFrameNanos = 0;
     }
 
-    // ── Layout helpers ──
-    private double left()   { return MARGIN_LEFT; }
-    private double top()    { return MARGIN_TOP; }
-    private double right()  { return Math.max(left() + 1, getWidth()  - MARGIN_RIGHT); }
-    private double bottom() { return Math.max(top()  + 1, getHeight() - MARGIN_BOTTOM); }
-    private double pw()     { return right() - left(); }
-    private double ph()     { return bottom() - top(); }
+    public void dispose() {
+        renderTimer.stop();
+    }
 
-    // ── Draw ──
-
+    /** Force an immediate redraw (e.g. after clear or visibility change). */
     public void draw() {
         double w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
@@ -144,7 +211,7 @@ public class WaveformCanvas extends Canvas {
         if (!hasData()) {
             gc.setFill(LABEL);
             gc.setFont(Font.font("Segoe UI", 14));
-            gc.fillText("Waiting for data...", w / 2 - 60, h / 2);
+            gc.fillText("Waiting for data…", w / 2 - 60, h / 2);
         } else {
             drawAllWaveforms(gc);
         }
@@ -152,16 +219,69 @@ public class WaveformCanvas extends Canvas {
         if (hoverX >= 0) drawHoverOverlay(gc);
     }
 
+    // ── Per-frame tick ──
+
+    private void tickAndDraw() {
+        if (viewport != null && dataProvider != null) {
+            viewport.tick(dataProvider.getTotalSamples());
+        }
+        draw();
+    }
+
+    // ── Data helpers ──
+
+    private boolean hasData() {
+        return dataProvider != null && dataProvider.getTotalSamples() > 0;
+    }
+
+    /**
+     * Fetch the samples that are currently visible through the viewport.
+     * Returns null if no data is available.
+     */
+    private float[] getVisibleSamples(int channel) {
+        if (dataProvider == null || viewport == null) return null;
+        long total = dataProvider.getTotalSamples();
+        if (total == 0) return null;
+        long start = viewport.getViewStart();
+        int count = viewport.getViewCount();
+        if (start < 0) start = 0;
+        if (start + count > total) count = (int) (total - start);
+        if (count <= 0) return null;
+        return dataProvider.getSamples(channel, start, count);
+    }
+
+    // ── Layout helpers ──
+    private double left()   { return MARGIN_LEFT; }
+    private double top()    { return MARGIN_TOP; }
+    private double right()  { return Math.max(left() + 1, getWidth()  - MARGIN_RIGHT); }
+    private double bottom() { return Math.max(top()  + 1, getHeight() - MARGIN_BOTTOM); }
+    private double pw()     { return right() - left(); }
+    private double ph()     { return bottom() - top(); }
+
+    // ── Waveform rendering ──
+
     private void drawAllWaveforms(GraphicsContext gc) {
         double l = left(), t = top(), r = right(), b = bottom();
         double plotW = pw(), plotH = ph();
         if (plotW <= 0 || plotH <= 0) return;
 
-        // Auto-range Y across ALL channels
+        // Fetch visible samples for all channels (one pass for auto-range + draw)
+        float[][] visSamples = new float[numChannels][];
+        int maxN = 0;
+        for (int ch = 0; ch < numChannels; ch++) {
+            float[] s = getVisibleSamples(ch);
+            visSamples[ch] = s;
+            if (s != null && s.length > maxN) maxN = s.length;
+        }
+        if (maxN == 0) return;
+
+        // Auto-range Y across visible window
         if (autoRange) {
             float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
             for (int ch = 0; ch < numChannels; ch++) {
-                for (float v : ringBufs[ch]) {
+                float[] s = visSamples[ch];
+                if (s == null) continue;
+                for (float v : s) {
                     if (v < min) min = v;
                     if (v > max) max = v;
                 }
@@ -176,13 +296,12 @@ public class WaveformCanvas extends Canvas {
         double yRange = yMax - yMin;
         if (yRange <= 0) yRange = 2;
         double yScale = plotH / yRange;
-        double spp   = Math.max(1.0, (double) maxSamples / plotW);
 
-        // Draw each channel as a separate trace
+        // Draw each channel trace
         for (int ch = 0; ch < numChannels; ch++) {
-            List<Float> buf = ringBufs[ch];
-            int n = buf.size();
-            if (n == 0) continue;
+            float[] buf = visSamples[ch];
+            if (buf == null || buf.length == 0) continue;
+            int n = buf.length;
 
             Color c = CHANNEL_COLORS[ch];
             gc.setStroke(channelVisible[ch] ? c : Color.rgb(
@@ -190,50 +309,67 @@ public class WaveformCanvas extends Canvas {
             gc.setLineWidth(2);
             gc.beginPath();
 
-            boolean first = true;
-            for (int px = (int) l; px <= (int) r; px++) {
-                int s0 = (int) Math.floor((px - l) * spp);
-                int s1 = (int) Math.floor((px - l + 1) * spp);
-                if (s0 < 0) s0 = 0;
-                if (s1 > n) s1 = n;
-                if (s0 >= n) break;
-
-                double sum = 0;
-                int count = 0;
-                for (int s = s0; s < s1; s++) {
-                    sum += buf.get(s);
-                    count++;
+            if (n < plotW) {
+                // Upsampling: fewer samples than pixels —
+                // spread samples evenly across full plot width
+                double pxPerSample = plotW / Math.max(1, n);
+                boolean first = true;
+                for (int s = 0; s < n; s++) {
+                    double px = l + (s + 0.5) * pxPerSample;
+                    double val = buf[s];
+                    double y = b - (val - yMin) * yScale;
+                    y = Math.max(t, Math.min(b, y));
+                    if (first) { gc.moveTo(px, y); first = false; }
+                    else       { gc.lineTo(px, y); }
                 }
-                if (count == 0) continue;
+            } else {
+                // Downsampling: average samples that fall in each pixel column
+                double spp = (double) n / plotW;
+                boolean first = true;
+                for (int px = (int) l; px <= (int) r; px++) {
+                    int s0 = (int) Math.floor((px - l) * spp);
+                    int s1 = (int) Math.floor((px - l + 1) * spp);
+                    if (s0 < 0) s0 = 0;
+                    if (s1 > n) s1 = n;
+                    if (s0 >= n) break;
 
-                double avg = sum / count;
-                double y = b - (avg - yMin) * yScale;
-                y = Math.max(t, Math.min(b, y));
+                    double sum = 0;
+                    int count = 0;
+                    for (int s = s0; s < s1; s++) {
+                        sum += buf[s];
+                        count++;
+                    }
+                    if (count == 0) continue;
 
-                if (first) { gc.moveTo(px + 0.5, y); first = false; }
-                else       { gc.lineTo(px + 0.5, y); }
+                    double avg = sum / count;
+                    double y = b - (avg - yMin) * yScale;
+                    y = Math.max(t, Math.min(b, y));
+
+                    if (first) { gc.moveTo(px + 0.5, y); first = false; }
+                    else       { gc.lineTo(px + 0.5, y); }
+                }
             }
             gc.stroke();
         }
     }
 
+    // ── Grid & axes ──
+
     private void drawGridAndAxes(GraphicsContext gc) {
         double l = left(), t = top(), r = right(), b = bottom();
         double plotW = pw(), plotH = ph();
 
-        // Grid
+        // Grid lines
         gc.setStroke(GRID);
         gc.setLineWidth(1);
         for (int i = 0; i <= 5; i++) {
             double y = t + plotH * i / 5.0;
             gc.strokeLine(l, y, r, y);
         }
-        if (numChunks > 1 && plotW > 0) {
-            double divW = plotW / numChunks;
-            for (int i = 1; i < numChunks; i++) {
-                double x = l + i * divW;
-                gc.strokeLine(x, t, x, b);
-            }
+        // Vertical grid divisions (4)
+        for (int i = 1; i <= 3; i++) {
+            double x = l + plotW * i / 4.0;
+            gc.strokeLine(x, t, x, b);
         }
 
         // Axes
@@ -255,20 +391,35 @@ public class WaveformCanvas extends Canvas {
             gc.fillText("-1.0", 2, b - 2);
         }
 
-        // X labels
-        if (plotW > 0 && numChunks > 1) {
-            double divW = plotW / numChunks;
-            for (int i = 0; i <= numChunks; i++) {
-                double x = l + i * divW;
-                String label = String.valueOf(i * (maxSamples / numChunks));
-                gc.fillText(label, x - label.length() * 3.5, b + 14);
-            }
+        // X axis labels — show sample range
+        if (viewport != null && hasData()) {
+            long vStart = viewport.getViewStart();
+            int vCount  = viewport.getViewCount();
+            gc.setFont(Font.font("Segoe UI", 9));
+            gc.fillText(String.valueOf(vStart), (int) l, (int) b + 14);
+            gc.fillText(String.valueOf(vStart + vCount / 2), (int)(l + plotW / 2 - 20), (int) b + 14);
+            gc.fillText(String.valueOf(vStart + vCount), (int) r - 30, (int) b + 14);
         }
 
         // Axis titles
         gc.setFont(Font.font("Segoe UI", 10));
         gc.fillText("Value", 2, 10);
         gc.fillText("Sample", r - 40, getHeight() - 2);
+
+        // Replay badge — top-left, prominent, no conflict with channel legend
+        if (viewport != null && !viewport.isLive()) {
+            double bx = l;
+            double by = t + 14;
+            double bw = 75, bh = 18;
+            gc.setFill(Color.rgb(237, 161, 0, 0.25));   // amber tint
+            gc.fillRoundRect(bx, by, bw, bh, 4, 4);
+            gc.setStroke(Color.web("#eda100"));
+            gc.setLineWidth(1);
+            gc.strokeRoundRect(bx, by, bw, bh, 4, 4);
+            gc.setFill(Color.web("#eda100"));
+            gc.setFont(Font.font("Segoe UI", FontWeight.BOLD, 11));
+            gc.fillText("⏸  REPLAY", bx + 6, by + 13);
+        }
 
         // Channel legend (top-right corner)
         double lx = r - numChannels * 80;
@@ -289,60 +440,99 @@ public class WaveformCanvas extends Canvas {
         double plotW = pw(), plotH = ph();
         if (plotW <= 0 || plotH <= 0 || !hasData()) return;
 
-        double spp = Math.max(1.0, (double) maxSamples / plotW);
+        float[][] visSamples = new float[numChannels][];
+        int maxN = 0;
+        for (int ch = 0; ch < numChannels; ch++) {
+            float[] s = getVisibleSamples(ch);
+            visSamples[ch] = s;
+            if (s != null && s.length > maxN) maxN = s.length;
+        }
+        if (maxN == 0) return;
+
+        double spp = (double) maxN / plotW;
         int idx = (int) Math.floor((hoverX - l) * spp);
+        idx = Math.max(0, Math.min(idx, maxN - 1));
         double yRange = yMax - yMin;
         if (yRange <= 0) yRange = 2;
         double yScale = plotH / yRange;
 
-        // Vertical crosshair (white on black)
-        gc.setStroke(Color.rgb(255, 255, 255, 0.25));
+        // ── Vertical crosshair (full-height, semi-transparent white) ──
+        gc.setStroke(Color.rgb(255, 255, 255, 0.30));
         gc.setLineWidth(1);
-        gc.setLineDashes(4, 4);
+        gc.setLineDashes(6, 3);
         gc.strokeLine(hoverX, t, hoverX, b);
         gc.setLineDashes(null);
 
-        // Dots + tooltip text
-        StringBuilder sb = new StringBuilder();
-        double dotY = 0;
+        // ── Dots on each visible trace ──
+        double[] dotYs = new double[numChannels];
+        float[] dotVals = new float[numChannels];
         for (int ch = 0; ch < numChannels; ch++) {
-            if (!channelVisible[ch]) continue;
-            List<Float> buf = ringBufs[ch];
-            if (buf.isEmpty()) continue;
-            int i = idx;
-            if (i < 0) i = 0;
-            if (i >= buf.size()) i = buf.size() - 1;
-            float val = buf.get(i);
+            if (!channelVisible[ch]) { dotYs[ch] = -1; continue; }
+            float[] buf = visSamples[ch];
+            if (buf == null || buf.length == 0) { dotYs[ch] = -1; continue; }
+            int i = Math.max(0, Math.min(idx, buf.length - 1));
+            float val = buf[i];
+            dotVals[ch] = val;
             double dy = b - (val - yMin) * yScale;
             dy = Math.max(t, Math.min(b, dy));
+            dotYs[ch] = dy;
+
+            // Outer ring (white) + inner fill (channel color)
+            gc.setFill(Color.WHITE);
+            gc.fillOval(hoverX - 5, dy - 5, 10, 10);
             gc.setFill(CHANNEL_COLORS[ch]);
             gc.fillOval(hoverX - 3, dy - 3, 6, 6);
-            gc.setStroke(BG);
-            gc.setLineWidth(2);
-            gc.strokeOval(hoverX - 3, dy - 3, 6, 6);
-            if (sb.length() > 0) sb.append("  ");
-            sb.append(String.format("Ch%d:%.4f", ch, val));
-            dotY = dy;
         }
 
-        String text = sb.toString();
-        if (text.isEmpty()) return;
-        gc.setFont(Font.font("Segoe UI", 10));
-        double tw = text.length() * 6 + 14;
-        double th = 20;
-        double tx = hoverX + 14;
-        double ty = dotY - th - 10;
-        if (tx + tw > r) tx = hoverX - tw - 14;
-        if (ty < t) ty = dotY + 14;
+        // ── Tooltip card ──
+        // Count visible channels for card height
+        int visCount = 0;
+        for (int ch = 0; ch < numChannels; ch++) {
+            if (channelVisible[ch] && visSamples[ch] != null && visSamples[ch].length > 0)
+                visCount++;
+        }
+        if (visCount == 0) return;
 
-        gc.setFill(Color.rgb(20, 20, 35, 0.92));
-        gc.setStroke(Color.rgb(100, 100, 130, 0.6));
+        // Layout constants
+        double cardPadH = 10, cardPadV = 6;
+        double lineH    = 16;   // height per channel row
+        double dotR     = 4;    // colored dot radius in card
+        double cardW    = 130;  // fixed width — cleaner than guessing from text
+        double cardH    = lineH * visCount + cardPadV * 2;
+        double cardX    = hoverX + 16;  // to the right of crosshair
+        double cardY    = t + 8;        // near top — avoids jumping with cursor Y
+        if (cardX + cardW > r) cardX = hoverX - cardW - 16;  // flip to left if near edge
+
+        // Card background
+        gc.setFill(Color.rgb(12, 12, 22, 0.94));
+        gc.setStroke(Color.rgb(80, 80, 100, 0.8));
         gc.setLineWidth(1);
-        gc.fillRoundRect(tx, ty, tw, th, 4, 4);
-        gc.strokeRoundRect(tx, ty, tw, th, 4, 4);
-        gc.setFill(Color.web("#e0e0e0"));
-        gc.fillText(text, tx + 7, ty + 14);
+        gc.fillRoundRect(cardX, cardY, cardW, cardH, 5, 5);
+        gc.strokeRoundRect(cardX, cardY, cardW, cardH, 5, 5);
+
+        // Per-channel rows
+        gc.setFont(Font.font("Segoe UI", FontWeight.BOLD, 11));
+        int row = 0;
+        for (int ch = 0; ch < numChannels; ch++) {
+            if (!channelVisible[ch] || visSamples[ch] == null || visSamples[ch].length == 0)
+                continue;
+
+            double ry = cardY + cardPadV + lineH * row + lineH * 0.75;
+
+            // Colored dot
+            gc.setFill(CHANNEL_COLORS[ch]);
+            gc.fillOval(cardX + cardPadH, ry - dotR, dotR * 2, dotR * 2);
+
+            // Channel label + value
+            String label = String.format("Ch%d  %.4f", ch, dotVals[ch]);
+            gc.setFill(Color.rgb(180, 180, 200));  // muted label
+            gc.fillText(label, cardX + cardPadH + dotR * 2 + 7, ry + 2);
+
+            row++;
+        }
     }
+
+    // ── Formatting ──
 
     private static String fmt(double v) {
         if (Math.abs(v) < 1e-6) return "0.00";

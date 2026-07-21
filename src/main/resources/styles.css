@@ -47,6 +47,7 @@
 .status-dot.idle    { -fx-text-fill: #aaaabb; }
 .status-dot.running { -fx-text-fill: #00a844; }
 .status-dot.error   { -fx-text-fill: #d50000; }
+.status-dot.stalled { -fx-text-fill: #ff9100; }
 
 /* --- Buttons (base) --- */
 .button {
@@ -103,10 +104,22 @@
     -fx-effect: dropshadow(gaussian, rgba(41,121,255,0.35), 8, 0, 0, 2);
 }
 
+/* Focus ring */
+.button:focused {
+    -fx-background-insets: -2;
+    -fx-border-color: #5599dd;
+    -fx-border-width: 2;
+    -fx-border-radius: 6;
+    -fx-border-style: solid;
+}
+
 /* Disabled buttons */
 .button:disabled {
     -fx-opacity: 0.4;
     -fx-cursor: default;
+}
+.button:disabled:focused {
+    -fx-border-color: transparent;
 }
 
 /* --- TableView --- */
@@ -240,4 +253,32 @@
     -fx-font-size: 11px;
     -fx-background-radius: 4;
     -fx-padding: 6 10;
+}
+
+/* ── Playback bar ────────────────────────────────────────────── */
+
+/* Live toggle — bright green when active, gray when frozen */
+.toggle-live {
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+    -fx-background-radius: 4;
+    -fx-padding: 5 12;
+    /* frozen (unselected) */
+    -fx-background-color: #3a3a4a;
+    -fx-text-fill: #888899;
+}
+.toggle-live:hover {
+    -fx-background-color: #4a4a5a;
+}
+.toggle-live:focused {
+    -fx-border-color: #5599dd;
+    -fx-border-width: 2;
+    -fx-border-radius: 4;
+}
+.toggle-live:selected {
+    -fx-background-color: #00c853;
+    -fx-text-fill: white;
+}
+.toggle-live:selected:hover {
+    -fx-background-color: #00e676;
 }
