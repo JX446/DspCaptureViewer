@@ -27,23 +27,16 @@ public class App extends Application {
     private static final int POLL_MS   = 10;
     private static final String HOST   = "localhost";
     private static final int PORT      = 4333;
-    private static final String PROXY_PATH =
-            "C:/Users/95412/Desktop/work/ide_code/ide_source_code/bundles/QXTOOLS/qxtools/toolchain/3slot_320f/bin/or_debug_proxy.exe";
-    private static final String CHIP_ARG = "--chip37xd";
-
     private static final int CHART_DOWNSAMPLE = 2;
     private static final int MAX_CHUNKS = 5000;
 
     private CaptureEngine engine;
-    private ProxyLauncher proxyLauncher;
     private final List<CaptureEngine.Chunk> allChunks = new ArrayList<>(MAX_CHUNKS);
     private int numChannels = 1;
     private int captureGen;
     private long startTime;
-    private final long[] chunkTimes = new long[64];
-    private final int[] chunkWords = new int[64];
-    private int chunkIdx;
-    private long lastStatusUpdate;
+    private long totalWords, lastStatusUpdate;
+    private final long[] chWords = new long[4];
 
     private Label statusLabel;
     private Button startBtn, stopBtn, clearBtn, exportBtn;
@@ -74,7 +67,6 @@ public class App extends Application {
 
     @Override
     public void start(Stage stage) {
-        proxyLauncher = new ProxyLauncher(PROXY_PATH, HOST, PORT, CHIP_ARG);
         configureEngine();
 
         // ── Build UI ──
@@ -83,7 +75,7 @@ public class App extends Application {
         // Header
         Label titleLabel = new Label("◆  DSP Capture Viewer");
         titleLabel.getStyleClass().add("header-title");
-        Label subtitleLabel = new Label("Real-time DSP buffer monitor  |  " + CHIP_ARG);
+        Label subtitleLabel = new Label("Real-time DSP buffer monitor");
         subtitleLabel.getStyleClass().add("header-subtitle");
 
         channelSelector = new ComboBox<>(
@@ -290,23 +282,19 @@ public class App extends Application {
                     waveform.pushChunk(chunk.channel, samples);
                     updateStats();
                     statusDot.getStyleClass().setAll("status-dot", "running");
-                    // Rate (sliding window, tracks actual new words)
                     long now = System.currentTimeMillis();
-                    int i = chunkIdx++ & 63;
-                    chunkTimes[i] = now;
-                    chunkWords[i] = chunk.newCount;
-                    int n = Math.min(chunkIdx, 64);
-                    long oldest = chunkTimes[Math.max(0, chunkIdx - n) & 63];
-                    float elapsedSec = Math.max(0.001f, (now - oldest) / 1000f);
-                    int totalWords = 0;
-                    for (int j = 0; j < n; j++) totalWords += chunkWords[(chunkIdx - 1 - j) & 63];
-                    float kBps = totalWords * 4f / 1024f / elapsedSec;  // kB/s
+                    if (startTime == 0) startTime = now;  // first chunk starts the clock
+                    totalWords += chunk.newCount;
+                    chWords[chunk.channel] += chunk.newCount;
+                    float kBps = totalWords * 4f / 1024f / Math.max(0.001f, (now - startTime) / 1000f);
                     long elapsed = now - startTime;
                     if (now - lastStatusUpdate > 500) {
                         lastStatusUpdate = now;
                         statusLabel.setText(String.format(
-                                "Running  %02d:%02d  |  %.1f kB/s  |  %d chunks",
-                                elapsed / 60000, (elapsed / 1000) % 60, kBps, engine.getChunkCount()));
+                                "Running  %02d:%02d  |  %.0f kB/s  |  Ch %d/%d/%d/%d kw",
+                                elapsed / 60000, (elapsed / 1000) % 60, kBps,
+                                chWords[0]/1000, chWords[1]/1000,
+                                chWords[2]/1000, chWords[3]/1000));
                     }
                 });
             }
@@ -356,22 +344,15 @@ public class App extends Application {
     }
 
     private void startCapture() {
-        statusLabel.setText("Starting proxy...");
+        statusLabel.setText("Connecting...");
         startBtn.setDisable(true);
         new Thread(() -> {
             try {
-                if (!proxyLauncher.startIfNeeded()) {
-                    Platform.runLater(() -> {
-                        startBtn.setDisable(false);
-                        statusLabel.setText("Proxy failed to start");
-                    });
-                    return;
-                }
-                Platform.runLater(() -> statusLabel.setText("Connecting..."));
                 configureEngine();
-                startTime = System.currentTimeMillis();
+                startTime = 0;
                 lastStatusUpdate = 0;
-                chunkIdx = 0;
+                totalWords = 0;
+                for (int i = 0; i < 4; i++) chWords[i] = 0;
                 engine.start();
                 Platform.runLater(() -> {
                     startBtn.setDisable(true);
@@ -384,6 +365,12 @@ public class App extends Application {
                     startBtn.setDisable(false);
                     statusLabel.setText("Connect failed: " + ex.getMessage());
                 });
+            } catch (Exception ex) {
+                Platform.runLater(() -> {
+                    startBtn.setDisable(false);
+                    statusLabel.setText("Error: " + ex.getClass().getSimpleName() + " - " + ex.getMessage());
+                });
+                ex.printStackTrace();
             }
         }).start();
     }
@@ -428,7 +415,6 @@ public class App extends Application {
     @Override
     public void stop() {
         if (engine != null) engine.stop();
-        if (proxyLauncher != null) proxyLauncher.stop();
     }
 
     public static void main(String[] args) {

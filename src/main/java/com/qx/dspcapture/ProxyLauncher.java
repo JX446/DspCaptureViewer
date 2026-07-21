@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit;
  * Launches or_debug_proxy.exe with correct arguments if not already listening.
  *
  * Minimum command: or_debug_proxy.exe -r &lt;port&gt; --chip&lt;type&gt;
- * e.g. or_debug_proxy.exe -r 4333 --chip37xd
+ * e.g. or_debug_proxy.exe -r 4333 --chip13x
  */
 public class ProxyLauncher {
 
@@ -24,7 +24,7 @@ public class ProxyLauncher {
      * @param proxyPath full path to or_debug_proxy.exe
      * @param host      proxy host (usually localhost)
      * @param port      proxy TCP port (usually 4333)
-     * @param chipArg   chip type argument, e.g. "--chip37xd"
+     * @param chipArg   chip type argument, e.g. "--chip13x"
      */
     public ProxyLauncher(String proxyPath, String host, int port, String chipArg) {
         this.proxyPath = proxyPath;
@@ -52,7 +52,7 @@ public class ProxyLauncher {
         String workDir = exe.getParent();
         String exeName = exe.getName();
 
-        // Build command: .\or_debug_proxy.exe -r 4333 --chip37xd
+        // Build command: .\or_debug_proxy.exe -r 4333 --chip13x
         ProcessBuilder pb = new ProcessBuilder(
                 "cmd", "/c",
                 ".\\" + exeName + " -r " + port + " " + chipArg

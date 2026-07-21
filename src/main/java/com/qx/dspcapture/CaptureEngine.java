@@ -136,30 +136,15 @@ public class CaptureEngine {
     private void captureLoop() {
         final int combinedWords = bufferSize + 1;  // buffer + adjacent wr
         try {
-            // ── Auto-detect: probe old wr (0xA000) to decide layout ──
-            int oldWrSample;
-            try {
-                byte[] r1 = client.readMemory(0xA000, 4);
-                oldWrSample = java.nio.ByteBuffer.wrap(r1).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
-            } catch (IOException e) {
-                System.out.println("[Capture] ERROR probing wr: " + e.getMessage());
-                return;
-            }
-            boolean isOld = (oldWrSample >= 0 && oldWrSample < 1024);
-
-            final int detectedWrAddr = isOld ? 0xA000 : 0x9800;
-            final int detectedBufSize = isOld ? 1024 : bufferSize;
-
             while (running) {
                 // ── Phase 1: read wr from Ch0 only ──
                 int wr;
                 if (lastWrs[0] == -1) {
-                                    int[] combined = client.readWords(chBufferAddr(0),
-                            isOld ? 1025 : combinedWords);
-                    System.arraycopy(combined, 0, localBufs[0], 0, detectedBufSize);
-                    wr = combined[detectedBufSize];
+                    int[] combined = client.readWords(chBufferAddr(0), combinedWords);
+                    System.arraycopy(combined, 0, localBufs[0], 0, bufferSize);
+                    wr = combined[bufferSize];
                 } else {
-                    byte[] wrRaw = client.readMemory(detectedWrAddr, 4);
+                    byte[] wrRaw = client.readMemory(chWrAddr(0), 4);
                     wr = java.nio.ByteBuffer.wrap(wrRaw)
                             .order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt();
                 }
@@ -170,19 +155,18 @@ public class CaptureEngine {
 
                     int bufAddr = chBufferAddr(ch);
                     int[] localBuf = localBufs[ch];
-                    int bs = detectedBufSize;
 
                     if (lastWr == -1) {
                         if (ch > 0) {
-                            int[] data = client.readWords(bufAddr, bs);
-                            System.arraycopy(data, 0, localBuf, 0, bs);
+                            int[] data = client.readWords(bufAddr, bufferSize);
+                            System.arraycopy(data, 0, localBuf, 0, bufferSize);
                         }
                     } else if (wr > lastWr) {
                         int newCount = wr - lastWr;
                         int[] seg = client.readWords(bufAddr + lastWr * 4, newCount);
                         System.arraycopy(seg, 0, localBuf, lastWr, newCount);
                     } else {
-                        int n1 = bs - lastWr;
+                        int n1 = bufferSize - lastWr;
                         int n2 = wr;
                         int[] seg1 = client.readWords(bufAddr + lastWr * 4, n1);
                         System.arraycopy(seg1, 0, localBuf, lastWr, n1);
@@ -192,12 +176,12 @@ public class CaptureEngine {
                         }
                     }
 
-                    int newCount = (lastWr == -1) ? bs
+                    int newCount = (lastWr == -1) ? bufferSize
                             : (wr > lastWr) ? wr - lastWr
-                            : (bs - lastWr) + wr;
+                            : (bufferSize - lastWr) + wr;
 
                     Chunk chunk = new Chunk(ch, chunkCount, wr,
-                            Arrays.copyOf(localBuf, bs), newCount,
+                            Arrays.copyOf(localBuf, bufferSize), newCount,
                             System.currentTimeMillis());
                     chunkCount++;
 
