@@ -29,14 +29,17 @@ copy /y target\lib\*win.jar target\staging\lib\ >nul
 jpackage --name "%NAME%" --app-version %VERSION% --input target\staging --main-jar %JAR% --main-class %MAIN% --runtime-image target\runtime --icon src\main\resources\ICON.ico --java-options "--module-path lib --add-modules javafx.controls,javafx.fxml" --type app-image --dest target
 if %ERRORLEVEL% NEQ 0 ( echo ERROR: jpackage failed & pause & exit /b 1 )
 
-echo [3/3] Fix launcher - copy cfg/jar/lib to exe root ...
+echo [3/3] Fix launcher + zip ...
 copy /y "%DIST%\app\%JAR%" "%DIST%\" >nul
 xcopy /q /e /y "%DIST%\app\lib\*" "%DIST%\lib\" >nul
 copy /y "%DIST%\app\%NAME%.cfg" "%DIST%\" >nul
+powershell -Command "Compress-Archive -Path '%DIST%' -DestinationPath '%DIST%.zip' -Force"
 
 echo.
 echo ============================================
-echo   Done: %DIST%\%NAME%.exe
+echo   Done: %DIST%.zip
 echo ============================================
-echo   Copy the "%NAME%" folder to distribute.
+echo   Send this zip to users.
+echo   Unzip and double-click %NAME%.exe
+echo   No Java installation required.
 pause
